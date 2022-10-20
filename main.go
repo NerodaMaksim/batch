@@ -179,8 +179,24 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	}
 
 	// Set response into fixed order
+	var (
+		separateResponsesFromNode    []*bytes.Buffer
+		separateResponsesFromIndexer []*bytes.Buffer
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		separateResponsesFromNode = splitIntoResponses(nodeResponse)
+	}()
 
-	return io.NopCloser(b.orderResponses(splitIntoResponses(nodeResponse), splitIntoResponses(indexerResponse))), nil
+	go func() {
+		defer wg.Done()
+		separateResponsesFromIndexer = splitIntoResponses(indexerResponse)
+	}()
+
+	wg.Wait()
+
+	return io.NopCloser(b.orderResponses(separateResponsesFromNode, separateResponsesFromIndexer)), nil
 }
 
 func main() {
