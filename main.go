@@ -14,6 +14,8 @@ const nodeUrl = "https://mainnet.infura.io/v3/ddf65afc6260497b85a339c0dfa371ee"
 
 type ReqTarget string
 
+var requestDuration time.Duration
+
 const (
 	NodeRequest    ReqTarget = "node"
 	IndexerRequest ReqTarget = "indexer"
@@ -173,7 +175,8 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	}(errChan)
 
 	wg.Wait()
-	fmt.Println("Request duration", time.Since(reqStartTime))
+	requestDuration = time.Since(reqStartTime)
+	fmt.Println("Request duration", requestDuration)
 	if len(errChan) != 0 {
 		return nil, <-errChan
 	}
@@ -245,5 +248,7 @@ func main() {
 	// }
 
 	// fmt.Println(string(bodyBytes))
-	fmt.Println(time.Since(startTime))
+	allDuration := time.Since(startTime)
+	fmt.Println("All duration time", allDuration)
+	fmt.Println("Delta", allDuration-requestDuration)
 }
