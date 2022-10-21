@@ -192,6 +192,7 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 		separateResponsesFromNode = splitIntoResponses(nodeResponse)
 	}()
 
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		separateResponsesFromIndexer = splitIntoResponses(indexerResponse)
