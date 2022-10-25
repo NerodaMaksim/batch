@@ -107,51 +107,45 @@ func (b *Batch) orderResponses(nodeResponse, indexerResponse []*bytes.Buffer) *b
 	return orderedResponses
 }
 
-func SplittBatch(request *bytes.Buffer, url string) []*bytes.Buffer {
-	var wg sync.WaitGroup
-	wg.Add(1)
-	errChan := make(chan error)
-	var requests []*bytes.Buffer
-	var Result []*bytes.Buffer
-	requests = append(requests, request)
-	var Response *bytes.Buffer
-	go func(errChan chan error) {
-		defer wg.Done()
-		marshalingTime := time.Now()
-		Response = new(bytes.Buffer)
-		nodeBody := bytes.NewBuffer([]byte("["))
-		for i, _ := range requests {
-			data, err := json.Marshal(request)
-			if err != nil {
-				errChan <- err
-				return
-			}
-			comma := ""
-			if i != len(requests)-1 {
-				comma = ","
-			}
-			nodeBody.WriteString(string(data) + comma)
-		}
-		nodeBody.WriteString("]")
-		//
-		fmt.Println("Marshaling time", time.Since(marshalingTime))
-		fmt.Println(nodeBody.String())
-		response, err := http.DefaultClient.Post(url, "application/json", nodeBody)
-		if err != nil {
-			errChan <- err
-			return
-		}
-		Result = append(Result, Response)
-		io.Copy(Response, response.Body)
-	}(errChan)
+func (b *Batch) SplittBatch(batch []*BatchElem, Url string) *bytes.Buffer {
 
-	return Result
+	//errChan := make(chan error)
+	//reqStartTime := time.Now()
+	var Response *bytes.Buffer
+	marshalingTime := time.Now()
+	Response = new(bytes.Buffer)
+	nodeBody := bytes.NewBuffer([]byte("["))
+	for i, req := range batch {
+		data, err := json.Marshal(req.request)
+		if err != nil {
+			panic(err)
+		}
+		comma := ""
+		if i != len(b.nodeReq)-1 {
+			comma = ","
+		}
+		nodeBody.WriteString(string(data) + comma)
+	}
+	nodeBody.WriteString("]")
+	//
+	fmt.Println("Marshaling time", time.Since(marshalingTime))
+	fmt.Println(nodeBody.String())
+	response, err := http.DefaultClient.Post(Url, "application/json", nodeBody)
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = io.Copy(Response, response.Body)
+	if err != nil {
+		panic(err)
+	}
+
+	return Response
 }
 
 func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	var wg sync.WaitGroup
-	var nodeResponse *bytes.Buffer
-	var indexerResponse *bytes.Buffer
+
 	wg.Add(1)
 	errChan := make(chan error)
 	reqStartTime := time.Now()
@@ -167,27 +161,31 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	var (
 		separateResponsesFromNode    []*bytes.Buffer
 		separateResponsesFromIndexer []*bytes.Buffer
+		responseFromNode             *bytes.Buffer
+		responsefromIndexer          *bytes.Buffer
 	)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		separateResponsesFromNode = SplittBatch(nodeResponse, nodeUrl)
+		responseFromNode = b.SplittBatch(b.nodeReq, nodeUrl)
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		separateResponsesFromIndexer = SplittBatch(indexerResponse, indexerUrl)
+		responsefromIndexer = b.SplittBatch(b.indexerReq, indexerUrl)
 	}()
+	wg.Wait()
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		separateResponsesFromNode = splitIntoResponses(nodeResponse)
+		separateResponsesFromNode = splitIntoResponses(responseFromNode)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		separateResponsesFromIndexer = splitIntoResponses(indexerResponse)
+		separateResponsesFromIndexer = splitIntoResponses(responsefromIndexer)
 	}()
 
 	wg.Wait()
@@ -202,11 +200,10 @@ func ForIndexer(arg []byte) bool {
 	if strings.Contains(line, "eth_getlogs") {
 		isIndexer = true
 	}
-
 	return isIndexer
 }
 
-func SplitRequest(a []map[string]json.RawMessage) (io.ReadCloser, error) {
+func (b *Batch) NewBatch(a []map[string]json.RawMessage, url string) (*Batch, error) {
 
 	batch := &Batch{order: make(map[int]ReqTarget)}
 	for i, obj := range a {
@@ -220,15 +217,17 @@ func SplitRequest(a []map[string]json.RawMessage) (io.ReadCloser, error) {
 		}
 
 	}
-	body, err := batch.SendBatch(nodeUrl, nodeUrl)
+	body, err := batch.SendBatch(url, url)
 	if err != nil {
 		panic(err)
 	}
+	_ = body
 
-	return body, nil
+	return batch, nil
 }
 
 func main() {
+	var batch *Batch
 	startTime := time.Now()
 	var a []map[string]json.RawMessage
 	var b map[string]json.RawMessage
@@ -247,10 +246,16 @@ func main() {
 		return
 	}
 	if ForIndexer(line) == true {
-
+		batch.NewBatch(a, nodeUrl)
+		if err != nil {
+			panic(err)
+		}
 	}
-
-	// Batch request, needs additional proccessing
+	_, err = batch.NewBatch(a, nodeUrl)
+	if err != nil {
+		panic(err)
+	}
+	// Batch request, needs additional processing
 	// fmt.Println(a)
 
 	// bodyBytes, err := io.ReadAll(body)
