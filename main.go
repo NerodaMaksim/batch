@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,6 +28,7 @@ type BatchElem struct {
 }
 
 type Batch struct {
+	req        []*BatchElem
 	nodeReq    []*BatchElem
 	indexerReq []*BatchElem
 	order      map[int]ReqTarget
@@ -105,26 +107,27 @@ func (b *Batch) orderResponses(nodeResponse, indexerResponse []*bytes.Buffer) *b
 	return orderedResponses
 }
 
-func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
+func SplittBatch(request *bytes.Buffer, url string) []*bytes.Buffer {
 	var wg sync.WaitGroup
-	var nodeResponse *bytes.Buffer
-	var indexerResponse *bytes.Buffer
 	wg.Add(1)
 	errChan := make(chan error)
-	reqStartTime := time.Now()
+	var requests []*bytes.Buffer
+	var Result []*bytes.Buffer
+	requests = append(requests, request)
+	var Response *bytes.Buffer
 	go func(errChan chan error) {
 		defer wg.Done()
 		marshalingTime := time.Now()
-		nodeResponse = new(bytes.Buffer)
+		Response = new(bytes.Buffer)
 		nodeBody := bytes.NewBuffer([]byte("["))
-		for i, req := range b.nodeReq {
-			data, err := json.Marshal(req.request)
+		for i, _ := range requests {
+			data, err := json.Marshal(request)
 			if err != nil {
 				errChan <- err
 				return
 			}
 			comma := ""
-			if i != len(b.nodeReq)-1 {
+			if i != len(requests)-1 {
 				comma = ","
 			}
 			nodeBody.WriteString(string(data) + comma)
@@ -133,46 +136,25 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 		//
 		fmt.Println("Marshaling time", time.Since(marshalingTime))
 		fmt.Println(nodeBody.String())
-		response, err := http.DefaultClient.Post(nodeUrl, "application/json", nodeBody)
+		response, err := http.DefaultClient.Post(url, "application/json", nodeBody)
 		if err != nil {
 			errChan <- err
 			return
 		}
-
-		io.Copy(nodeResponse, response.Body)
+		Result = append(Result, Response)
+		io.Copy(Response, response.Body)
 	}(errChan)
 
+	return Result
+}
+
+func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
+	var wg sync.WaitGroup
+	var nodeResponse *bytes.Buffer
+	var indexerResponse *bytes.Buffer
 	wg.Add(1)
-
-	go func(errChan chan error) {
-		defer wg.Done()
-		marshalingTime := time.Now()
-		indexerResponse = new(bytes.Buffer)
-		indexerBody := bytes.NewBuffer([]byte("["))
-		for i, req := range b.indexerReq {
-			data, err := json.Marshal(req.request)
-			if err != nil {
-				errChan <- err
-				return
-			}
-			comma := ""
-			if i != len(b.indexerReq)-1 {
-				comma = ","
-			}
-			indexerBody.WriteString(string(data) + comma)
-		}
-		indexerBody.WriteString("]")
-		//
-		fmt.Println("Marshaling time", time.Since(marshalingTime))
-		fmt.Println(indexerBody.String())
-		response, err := http.DefaultClient.Post(indexerUrl, "application/json", indexerBody)
-		if err != nil {
-			errChan <- err
-			return
-		}
-
-		io.Copy(indexerResponse, response.Body)
-	}(errChan)
+	errChan := make(chan error)
+	reqStartTime := time.Now()
 
 	wg.Wait()
 	requestDuration = time.Since(reqStartTime)
@@ -189,6 +171,16 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		separateResponsesFromNode = SplittBatch(nodeResponse, nodeUrl)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		separateResponsesFromIndexer = SplittBatch(indexerResponse, indexerUrl)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		separateResponsesFromNode = splitIntoResponses(nodeResponse)
 	}()
 
@@ -201,6 +193,39 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	wg.Wait()
 
 	return io.NopCloser(b.orderResponses(separateResponsesFromNode, separateResponsesFromIndexer)), nil
+}
+
+func ForIndexer(arg []byte) bool {
+	isIndexer := false
+	line := string(arg)
+
+	if strings.Contains(line, "eth_getlogs") {
+		isIndexer = true
+	}
+
+	return isIndexer
+}
+
+func SplitRequest(a []map[string]json.RawMessage) (io.ReadCloser, error) {
+
+	batch := &Batch{order: make(map[int]ReqTarget)}
+	for i, obj := range a {
+		fmt.Println(string(obj["method"]))
+		if string(obj["method"]) == "eth_getLogs" {
+			batch.indexerReq = append(batch.indexerReq, &BatchElem{request: obj, id: i})
+			batch.order[i] = IndexerRequest
+		} else {
+			batch.nodeReq = append(batch.nodeReq, &BatchElem{request: obj, id: i})
+			batch.order[i] = NodeRequest
+		}
+
+	}
+	body, err := batch.SendBatch(nodeUrl, nodeUrl)
+	if err != nil {
+		panic(err)
+	}
+
+	return body, nil
 }
 
 func main() {
@@ -221,28 +246,13 @@ func main() {
 		fmt.Println(b)
 		return
 	}
+	if ForIndexer(line) == true {
+
+	}
 
 	// Batch request, needs additional proccessing
 	// fmt.Println(a)
 
-	batch := &Batch{order: make(map[int]ReqTarget)}
-	for i, obj := range a {
-		fmt.Println(string(obj["method"]))
-		if string(obj["method"]) == `"eth_getLogs"` {
-			batch.indexerReq = append(batch.indexerReq, &BatchElem{request: obj, id: i})
-			batch.order[i] = IndexerRequest
-		} else {
-			batch.nodeReq = append(batch.nodeReq, &BatchElem{request: obj, id: i})
-			batch.order[i] = NodeRequest
-		}
-
-	}
-
-	body, err := batch.SendBatch(nodeUrl, nodeUrl)
-	if err != nil {
-		panic(err)
-	}
-	_ = body
 	// bodyBytes, err := io.ReadAll(body)
 	// if err != nil {
 	// 	panic(err)
