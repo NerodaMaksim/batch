@@ -150,7 +150,6 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	errChan := make(chan error)
 	reqStartTime := time.Now()
 
-	wg.Wait()
 	requestDuration = time.Since(reqStartTime)
 	fmt.Println("Request duration", requestDuration)
 	if len(errChan) != 0 {
