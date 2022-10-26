@@ -20,6 +20,7 @@ var requestDuration time.Duration
 const (
 	NodeRequest    ReqTarget = "node"
 	IndexerRequest ReqTarget = "indexer"
+	getLogsMethod  string    = "eth_getLogs"
 )
 
 type BatchElem struct {
@@ -86,7 +87,6 @@ func (b *Batch) orderResponses(nodeResponse, indexerResponse []*bytes.Buffer) *b
 	if len(nodeResponse) != len(b.nodeReq) || len(indexerResponse) != len(b.indexerReq) {
 		return nil
 	}
-	fmt.Println(b.order)
 	for i := 0; i < len(b.order); i++ {
 		if b.order[i] == IndexerRequest {
 			orderedResponses.ReadFrom(indexerResponse[idxRespId])
@@ -107,7 +107,7 @@ func (b *Batch) orderResponses(nodeResponse, indexerResponse []*bytes.Buffer) *b
 	return orderedResponses
 }
 
-func (b *Batch) SplittBatch(batch []*BatchElem, Url string) *bytes.Buffer {
+func (b *Batch) SplitBatch(batch []*BatchElem, Url string) (*bytes.Buffer, error) {
 
 	//errChan := make(chan error)
 	//reqStartTime := time.Now()
@@ -118,7 +118,7 @@ func (b *Batch) SplittBatch(batch []*BatchElem, Url string) *bytes.Buffer {
 	for i, req := range batch {
 		data, err := json.Marshal(req.request)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		comma := ""
 		if i != len(b.nodeReq)-1 {
@@ -129,32 +129,30 @@ func (b *Batch) SplittBatch(batch []*BatchElem, Url string) *bytes.Buffer {
 	nodeBody.WriteString("]")
 	//
 	fmt.Println("Marshaling time", time.Since(marshalingTime))
-	fmt.Println(nodeBody.String())
+	reqStartTime := time.Now()
+
 	response, err := http.DefaultClient.Post(Url, "application/json", nodeBody)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
+	requestDuration += time.Since(reqStartTime)
+	fmt.Println("Request duration", Url, requestDuration)
+
+	copyTime := time.Now()
 	_, err = io.Copy(Response, response.Body)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
+	fmt.Println("Copy duration", "url", time.Since(copyTime))
 
-	return Response
+	return Response, nil
 }
 
 func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	var wg sync.WaitGroup
-
-	wg.Add(1)
+	var err error
 	errChan := make(chan error)
-	reqStartTime := time.Now()
-
-	requestDuration = time.Since(reqStartTime)
-	fmt.Println("Request duration", requestDuration)
-	if len(errChan) != 0 {
-		return nil, <-errChan
-	}
 
 	// Set response into fixed order
 	var (
@@ -166,14 +164,24 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		responseFromNode = b.SplittBatch(b.nodeReq, nodeUrl)
+		responseFromNode, err = b.SplitBatch(b.nodeReq, nodeUrl)
+		if err != nil {
+			errChan <- err
+		}
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		responsefromIndexer = b.SplittBatch(b.indexerReq, indexerUrl)
+		responsefromIndexer, err = b.SplitBatch(b.indexerReq, indexerUrl)
+		if err != nil {
+			errChan <- err
+		}
 	}()
 	wg.Wait()
+
+	if len(errChan) != 0 {
+		return nil, <-errChan
+	}
 
 	wg.Add(1)
 	go func() {
@@ -193,66 +201,78 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 }
 
 func ForIndexer(arg []byte) bool {
-	isIndexer := false
-	line := string(arg)
-
-	if strings.Contains(line, "eth_getlogs") {
-		isIndexer = true
-	}
-	return isIndexer
+	startTime := time.Now()
+	defer fmt.Println("Check if req for indexer", "duration", time.Since(startTime))
+	return strings.Contains(string(arg), getLogsMethod)
 }
 
-func (b *Batch) NewBatch(a []map[string]json.RawMessage, url string) (*Batch, error) {
-
+func NewBatch(a []map[string]json.RawMessage) (*Batch, error) {
+	startTime := time.Now()
+	defer fmt.Println("Creating batch object", "duration", time.Since(startTime))
 	batch := &Batch{order: make(map[int]ReqTarget)}
+
 	for i, obj := range a {
-		fmt.Println(string(obj["method"]))
-		if string(obj["method"]) == "eth_getLogs" {
+		if string(obj["method"]) == getLogsMethod {
 			batch.indexerReq = append(batch.indexerReq, &BatchElem{request: obj, id: i})
 			batch.order[i] = IndexerRequest
 		} else {
 			batch.nodeReq = append(batch.nodeReq, &BatchElem{request: obj, id: i})
 			batch.order[i] = NodeRequest
 		}
-
 	}
-	body, err := batch.SendBatch(url, url)
-	if err != nil {
-		panic(err)
-	}
-	_ = body
 
 	return batch, nil
 }
 
-func main() {
-	var batch *Batch
+func sendReqToIndexer(body []byte, indexerUrl string) (io.ReadCloser, error) {
 	startTime := time.Now()
+	defer fmt.Println("Sending common request to indexer", "duration", time.Since(startTime))
+	response, err := http.DefaultClient.Post(indexerUrl, "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		return nil, err
+	}
+	return response.Body, nil
+}
+
+func main() {
+	startTime := time.Now()
+	defer func() {
+		allDuration := time.Since(startTime)
+		fmt.Println("All duration time", allDuration)
+		fmt.Println("Delta", allDuration-requestDuration)
+	}()
+	indexerUrl := nodeUrl
 	var a []map[string]json.RawMessage
 	var b map[string]json.RawMessage
 	//line := []byte(`{"a": "b", "c": "d"}`)
 	//line := []byte(`[{"a": "b", "c": "d"}, {"e": "b", "f": "d"}]`)
 	line := []byte(`[{"method":"eth_syncing","params":[],"id":2,"jsonrpc":"2.0"},{"jsonrpc":"2.0","id":696969,"method":"eth_getLogs","params":[{"toBlock":"0x7A120","fromBlock":"0x0"}]},{"jsonrpc":"2.0","id":69696932,"method":"eth_getLogs","params":[{"toBlock":"0x7A120","fromBlock":"0x0"}]},{"jsonrpc":"2.0","id":69696932,"method":"eth_getLogs","params":[{"toBlock":"0x7A120","fromBlock":"0x0"}]},{"jsonrpc":"2.0","id":69696932,"method":"eth_getLogs","params":[{"toBlock":"0x7A120","fromBlock":"0x0"}]},{"jsonrpc":"2.0","id":69696932,"method":"eth_getLogs","params":[{"toBlock":"0x7A120","fromBlock":"0x0"}]},{"jsonrpc":"2.0","id":69696932,"method":"eth_getLogs","params":[{"toBlock":"0x7A120","fromBlock":"0x0"}]},{"jsonrpc":"2.0","id":69696932,"method":"eth_getLogs","params":[{"toBlock":"0x7A120","fromBlock":"0x0"}]},{"jsonrpc":"2.0","id":69696932,"method":"eth_getLogs","params":[{"toBlock":"0x7A120","fromBlock":"0x0"}]},{"jsonrpc":"2.0","id":69696932,"method":"eth_getLogs","params":[{"toBlock":"0x7A120","fromBlock":"0x0"}]}]`)
 	// line := []byte(`[{"method":"eth_syncing","params":[],"id":1,"jsonrpc":"2.0"},{"method":"eth_syncing","params":[],"id":2,"jsonrpc":"2.0"}, {"jsonrpc":"2.0","id":3,"method":"eth_getLogs","params":[{"toBlock":"0x1","fromBlock":"0x0"}]}, {"method":"eth_syncing","params":[],"id":4,"jsonrpc":"2.0"}]`)
-	err := json.Unmarshal(line, &a)
-	if err != nil {
-		err := json.Unmarshal(line, &b)
-		if err != nil {
-			panic(err)
-		}
-		// Common request
-		fmt.Println(b)
-		return
-	}
+
 	if ForIndexer(line) == true {
-		batch.NewBatch(a, nodeUrl)
+		err := json.Unmarshal(line, &a)
+		if err != nil {
+			err := json.Unmarshal(line, &b)
+			if err != nil {
+				panic(err)
+			}
+			_, err = sendReqToIndexer(line, indexerUrl)
+			if err != nil {
+				panic(err)
+			}
+			return
+		}
+
+		batch, err := NewBatch(a)
 		if err != nil {
 			panic(err)
 		}
-	}
-	_, err = batch.NewBatch(a, nodeUrl)
-	if err != nil {
-		panic(err)
+
+		body, err := batch.SendBatch(nodeUrl, indexerUrl)
+		if err != nil {
+			panic(err)
+		}
+		_ = body
 	}
 	// Batch request, needs additional processing
 	// fmt.Println(a)
@@ -263,7 +283,5 @@ func main() {
 	// }
 
 	// fmt.Println(string(bodyBytes))
-	allDuration := time.Since(startTime)
-	fmt.Println("All duration time", allDuration)
-	fmt.Println("Delta", allDuration-requestDuration)
+
 }
