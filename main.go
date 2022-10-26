@@ -32,15 +32,20 @@ type Batch struct {
 	order      map[int]ReqTarget
 }
 
-func splitIntoResponses(resp *bytes.Buffer) []*bytes.Buffer {
+func splitIntoResponses(resp *bytes.Buffer /*resp io.ReadCloser*/) []*bytes.Buffer {
+	// entryChar := make([]byte, 1)
 	resps := []*bytes.Buffer{}
 	for {
 		openedZippers := 0
 		closedZippers := 0
+		// n, err := resp.Read(entryChar)
 		entryChar := resp.Next(1)
 		if len(entryChar) == 0 {
 			break
 		}
+		// if n == 0 || err != nil {
+		// 	break
+		// }
 		if entryChar[0] == '{' && openedZippers == 0 && closedZippers == 0 {
 			singleResp := bytes.NewBuffer(entryChar)
 			openedZippers++
@@ -49,10 +54,15 @@ func splitIntoResponses(resp *bytes.Buffer) []*bytes.Buffer {
 				if stopSearch {
 					break
 				}
+				// char := make([]byte, 1)
+				// n, err := resp.Read(char)
 				char := resp.Next(1)
 				if len(char) == 0 {
 					break
 				}
+				// if n == 0 || err != nil {
+				// 	break
+				// }
 				switch char[0] {
 				case '{':
 					openedZippers++
@@ -107,6 +117,8 @@ func (b *Batch) orderResponses(nodeResponse, indexerResponse []*bytes.Buffer) *b
 
 func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	var wg sync.WaitGroup
+	// var nodeResponse io.ReadCloser
+	// var indexerResponse io.ReadCloser
 	var nodeResponse *bytes.Buffer
 	var indexerResponse *bytes.Buffer
 	wg.Add(1)
@@ -138,8 +150,10 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 			errChan <- err
 			return
 		}
-
+		copyingTime := time.Now()
+		// nodeResponse = response.Body
 		io.Copy(nodeResponse, response.Body)
+		fmt.Println("Copying duration", time.Since(copyingTime))
 	}(errChan)
 
 	wg.Add(1)
@@ -165,13 +179,17 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 		//
 		fmt.Println("Marshaling time", time.Since(marshalingTime))
 		fmt.Println(indexerBody.String())
+
 		response, err := http.DefaultClient.Post(indexerUrl, "application/json", indexerBody)
 		if err != nil {
 			errChan <- err
 			return
 		}
 
+		copyingTime := time.Now()
+		// indexerResponse = response.Body
 		io.Copy(indexerResponse, response.Body)
+		fmt.Println("Copying duration", time.Since(copyingTime))
 	}(errChan)
 
 	wg.Wait()
@@ -182,6 +200,7 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	}
 
 	// Set response into fixed order
+	separatingTime := time.Now()
 	var (
 		separateResponsesFromNode    []*bytes.Buffer
 		separateResponsesFromIndexer []*bytes.Buffer
@@ -199,6 +218,7 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	}()
 
 	wg.Wait()
+	fmt.Println("Separation duration", time.Since(separatingTime))
 
 	return io.NopCloser(b.orderResponses(separateResponsesFromNode, separateResponsesFromIndexer)), nil
 }
