@@ -142,7 +142,7 @@ func (b *Batch) SplitBatch(batch []*BatchElem, Url string, resp *bytes.Buffer) e
 	if err != nil {
 		return err
 	}
-	fmt.Println("Copy duration", "url", time.Since(copyTime))
+	fmt.Println("Copy duration", "url", Url, time.Since(copyTime))
 
 	return nil
 }
@@ -181,6 +181,7 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 		return nil, <-errChan
 	}
 
+	splitTime := time.Now()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -194,6 +195,8 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	}()
 
 	wg.Wait()
+
+	fmt.Println("Split response duration", time.Since(splitTime))
 
 	return io.NopCloser(b.orderResponses(separateResponsesFromNode, separateResponsesFromIndexer)), nil
 }
