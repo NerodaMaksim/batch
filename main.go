@@ -227,6 +227,7 @@ func NewBatch(a []map[string]json.RawMessage) (*Batch, error) {
 		} else {
 			batch.nodeReq = append(batch.nodeReq, &BatchElem{request: obj, id: i})
 			batch.order[i] = NodeRequest
+			batch.req = a
 		}
 
 	}
