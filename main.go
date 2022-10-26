@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-const nodeUrl = "https://mainnet.infura.io/v3/ddf65afc6260497b85a339c0dfa371ee"
-
 type ReqTarget string
 
 var requestDuration time.Duration
@@ -21,6 +19,8 @@ const (
 	NodeRequest    ReqTarget = "node"
 	IndexerRequest ReqTarget = "indexer"
 	getLogsMethod  string    = "eth_getLogs"
+	nodeUrl                  = "https://mainnet.infura.io/v3/ddf65afc6260497b85a339c0dfa371ee"
+	indexerUrl               = "https://mainnet.infura.io/v3/0ae14f9415c34ea49c7e0012e5ff1248"
 )
 
 type BatchElem struct {
@@ -107,18 +107,16 @@ func (b *Batch) orderResponses(nodeResponse, indexerResponse []*bytes.Buffer) *b
 	return orderedResponses
 }
 
-func (b *Batch) SplitBatch(batch []*BatchElem, Url string) (*bytes.Buffer, error) {
+func (b *Batch) SplitBatch(batch []*BatchElem, Url string, resp *bytes.Buffer) error {
 
 	//errChan := make(chan error)
 	//reqStartTime := time.Now()
-	var Response *bytes.Buffer
 	marshalingTime := time.Now()
-	Response = new(bytes.Buffer)
 	nodeBody := bytes.NewBuffer([]byte("["))
 	for i, req := range batch {
 		data, err := json.Marshal(req.request)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		comma := ""
 		if i != len(b.nodeReq)-1 {
@@ -133,20 +131,20 @@ func (b *Batch) SplitBatch(batch []*BatchElem, Url string) (*bytes.Buffer, error
 
 	response, err := http.DefaultClient.Post(Url, "application/json", nodeBody)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	requestDuration += time.Since(reqStartTime)
+	requestDuration = time.Since(reqStartTime)
 	fmt.Println("Request duration", Url, requestDuration)
 
 	copyTime := time.Now()
-	_, err = io.Copy(Response, response.Body)
+	_, err = io.Copy(resp, response.Body)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	fmt.Println("Copy duration", "url", time.Since(copyTime))
 
-	return Response, nil
+	return nil
 }
 
 func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
@@ -158,13 +156,13 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	var (
 		separateResponsesFromNode    []*bytes.Buffer
 		separateResponsesFromIndexer []*bytes.Buffer
-		responseFromNode             *bytes.Buffer
-		responsefromIndexer          *bytes.Buffer
 	)
+	responseFromNode := new(bytes.Buffer)
+	responsefromIndexer := new(bytes.Buffer)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		responseFromNode, err = b.SplitBatch(b.nodeReq, nodeUrl)
+		err = b.SplitBatch(b.nodeReq, nodeUrl, responseFromNode)
 		if err != nil {
 			errChan <- err
 		}
@@ -172,7 +170,7 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		responsefromIndexer, err = b.SplitBatch(b.indexerReq, indexerUrl)
+		err = b.SplitBatch(b.indexerReq, indexerUrl, responsefromIndexer)
 		if err != nil {
 			errChan <- err
 		}
@@ -241,7 +239,6 @@ func main() {
 		fmt.Println("All duration time", allDuration)
 		fmt.Println("Delta", allDuration-requestDuration)
 	}()
-	indexerUrl := nodeUrl
 	var a []map[string]json.RawMessage
 	var b map[string]json.RawMessage
 	//line := []byte(`{"a": "b", "c": "d"}`)
