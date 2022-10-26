@@ -29,7 +29,7 @@ type BatchElem struct {
 }
 
 type Batch struct {
-	req        []*BatchElem
+	req        []map[string]json.RawMessage
 	nodeReq    []*BatchElem
 	indexerReq []*BatchElem
 	order      map[int]ReqTarget
@@ -151,7 +151,14 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	var wg sync.WaitGroup
 	var err error
 	errChan := make(chan error)
-
+	batch, err := NewBatch(b.req)
+	result, err := json.Marshal(batch.req)
+	if err != nil {
+		return nil, err
+	}
+	if len(b.nodeReq) == 0 {
+		return sendReqToIndexer(result, indexerUrl)
+	}
 	// Set response into fixed order
 	var (
 		separateResponsesFromNode    []*bytes.Buffer
@@ -216,10 +223,12 @@ func NewBatch(a []map[string]json.RawMessage) (*Batch, error) {
 		if string(obj["method"]) == getLogsMethod {
 			batch.indexerReq = append(batch.indexerReq, &BatchElem{request: obj, id: i})
 			batch.order[i] = IndexerRequest
+			batch.req = a
 		} else {
 			batch.nodeReq = append(batch.nodeReq, &BatchElem{request: obj, id: i})
 			batch.order[i] = NodeRequest
 		}
+
 	}
 
 	return batch, nil
