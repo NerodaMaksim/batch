@@ -108,9 +108,6 @@ func (b *Batch) orderResponses(nodeResponse, indexerResponse []*bytes.Buffer) *b
 }
 
 func (b *Batch) SplitBatch(batch []*BatchElem, Url string, resp *bytes.Buffer) error {
-
-	//errChan := make(chan error)
-	//reqStartTime := time.Now()
 	marshalingTime := time.Now()
 	nodeBody := bytes.NewBuffer([]byte("["))
 	for i, req := range batch {
@@ -149,14 +146,11 @@ func (b *Batch) SplitBatch(batch []*BatchElem, Url string, resp *bytes.Buffer) e
 
 func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	var wg sync.WaitGroup
-	var err error
-	errChan := make(chan error)
-	batch, err := NewBatch(b.req)
-	result, err := json.Marshal(batch.req)
-	if err != nil {
-		return nil, err
-	}
 	if len(b.nodeReq) == 0 {
+		result, err := json.Marshal(b.req)
+		if err != nil {
+			return nil, err
+		}
 		return sendReqToIndexer(result, indexerUrl)
 	}
 	// Set response into fixed order
@@ -166,7 +160,9 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	)
 	responseFromNode := new(bytes.Buffer)
 	responsefromIndexer := new(bytes.Buffer)
-	wg.Add(1)
+	errChan := make(chan error)
+	var err error
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		err = b.SplitBatch(b.nodeReq, nodeUrl, responseFromNode)
@@ -174,7 +170,7 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 			errChan <- err
 		}
 	}()
-	wg.Add(1)
+
 	go func() {
 		defer wg.Done()
 		err = b.SplitBatch(b.indexerReq, indexerUrl, responsefromIndexer)
@@ -189,13 +185,12 @@ func (b *Batch) SendBatch(nodeUrl, indexerUrl string) (io.ReadCloser, error) {
 	}
 
 	splitTime := time.Now()
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		separateResponsesFromNode = splitIntoResponses(responseFromNode)
 	}()
 
-	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		separateResponsesFromIndexer = splitIntoResponses(responsefromIndexer)
@@ -284,14 +279,5 @@ func main() {
 		}
 		_ = body
 	}
-	// Batch request, needs additional processing
-	// fmt.Println(a)
-
-	// bodyBytes, err := io.ReadAll(body)
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// fmt.Println(string(bodyBytes))
 
 }
